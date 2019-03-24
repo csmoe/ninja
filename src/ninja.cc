@@ -17,6 +17,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sstream>
+#include <set>
+#include <assert.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -909,6 +912,38 @@ void printCompdb(const char* const directory, const Edge* const edge,
   printf("\"\n  }");
 }
 
+bool GetAllDependentEdges(Node* node, std::vector<Edge*>* depend_edges,
+                          std::set<Node*>* visited_nodes=NULL,
+                          std::set<Edge*>* visited_edges=NULL) {
+  if (visited_nodes == NULL || visited_edges == NULL) {
+    std::set<Node*> visited_nodes_;
+    std::set<Edge*> visited_edges_;
+    return GetAllDependentEdges(node, depend_edges, &visited_nodes_, &visited_edges_);
+  }
+
+  assert(node);
+  assert(depend_edges);
+
+  if (visited_nodes->count(node)) {
+    return true;
+  }
+  visited_nodes->insert(node);
+
+  Edge* edge = node->in_edge();
+  // Leaf node
+  if (!edge || visited_edges->count(edge)) {
+    return true;
+  }
+  visited_edges->insert(edge);
+  depend_edges->push_back(edge);
+
+  for (Node* input_node : edge->inputs_) {
+    if (!GetAllDependentEdges(input_node, depend_edges, visited_nodes, visited_edges))
+      return false;
+  }
+  return true;
+}
+
 int NinjaMain::ToolCompilationDatabase(const Options* options, int argc,
                                        char* argv[]) {
   // The compdb tool uses getopt, and expects argv[0] to contain the name of
@@ -920,11 +955,42 @@ int NinjaMain::ToolCompilationDatabase(const Options* options, int argc,
 
   optind = 1;
   int opt;
-  while ((opt = getopt(argc, argv, const_cast<char*>("hx"))) != -1) {
+  const option long_options[] = {
+      {"target", required_argument, NULL, 't'},
+      {NULL, 0, NULL, 0}
+  };
+
+  std::vector<Edge*> edges_to_process = state_.edges_;
+  while ((opt = getopt_long(argc, argv, "x:", long_options, NULL)) != -1) {
     switch(opt) {
       case 'x':
         eval_mode = ECM_EXPAND_RSPFILE;
         break;
+
+      case 't': {
+        vector<Node*> targets;
+        std::istringstream iss(optarg);
+        string target;
+        std::vector<Edge*> user_interested_edges;
+
+        while (std::getline(iss, target, ',')) {
+          string err;
+          Node* node = CollectTarget(target.c_str(), &err);
+
+          if (!node) {
+            Error("%s", err.c_str());
+            return 1;
+          }
+          if (!GetAllDependentEdges(node, &user_interested_edges)) {
+            return 1;
+          }
+        }
+        if (user_interested_edges.size() > 0) {
+          edges_to_process = user_interested_edges;
+        }
+
+        break;
+      }
 
       case 'h':
       default:
@@ -932,7 +998,8 @@ int NinjaMain::ToolCompilationDatabase(const Options* options, int argc,
             "usage: ninja -t compdb [options] [rules]\n"
             "\n"
             "options:\n"
-            "  -x     expand @rspfile style response file invocations\n"
+            "  -x           expand @rspfile style response file invocations\n"
+            "  --target     generate compilation database for given targets\n"
             );
         return 1;
     }
@@ -955,8 +1022,8 @@ int NinjaMain::ToolCompilationDatabase(const Options* options, int argc,
   }
 
   putchar('[');
-  for (vector<Edge*>::iterator e = state_.edges_.begin();
-       e != state_.edges_.end(); ++e) {
+  for (vector<Edge*>::iterator e = edges_to_process.begin();
+       e != edges_to_process.end(); ++e) {
     if ((*e)->inputs_.empty())
       continue;
     if (argc == 0) {
